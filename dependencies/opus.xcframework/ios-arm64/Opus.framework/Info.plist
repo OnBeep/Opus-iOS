@@ -5,13 +5,13 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>opus</string>
+    <string>Opus</string>
     <key>CFBundleIdentifier</key>
-    <string>org.opus-codec.opus</string>
+    <string>org.opus-codec.Opus</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>opus</string>
+    <string>Opus</string>
     <key>CFBundlePackageType</key>
     <string>FMWK</string>
     <key>CFBundleShortVersionString</key>

@@ -1,4 +1,4 @@
-framework module opus {
+framework module Opus {
   umbrella header "opus.h"
   export *
   module * { export * }
