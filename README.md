@@ -1,62 +1,189 @@
-## Building the Library
+# Opus-iOS
 
-#### Specify libopus and iOS SDK Version
-1. `$ git clone git@github.com:OnBeep/Opus-iOS.git`
-2. `$ vim build-libopus.sh` Ensure the VERSION, SDKVERSION and MINIOSVERSION variables are set to the desired environment.
+iOS build scripts for the [Opus Codec](http://www.opus-codec.org) - a totally open, royalty-free, highly versatile audio codec.
 
-iOS build scripts for the [Opus Codec](http://www.opus-codec.org).
+## Features
+
+- ✅ XCFramework with proper Apple Silicon support
+- ✅ iOS Device (arm64)
+- ✅ iOS Simulator (arm64 for Apple Silicon + x86_64 for Intel)
+- ✅ Swift Package Manager support
+- ✅ CocoaPods support
+- ✅ Minimum iOS 16.0
+
+## Installation
+
+### Swift Package Manager (Recommended)
+
+Add the package to your `Package.swift`:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/OnBeep/Opus-iOS.git", from: "1.9.0")
+]
+```
+
+Or in Xcode:
+1. Go to **File → Add Package Dependencies...**
+2. Enter the repository URL: `https://github.com/OnBeep/Opus-iOS.git`
+3. Select the version and add to your target
+
+### CocoaPods
+
+Add to your `Podfile`:
+
+```ruby
+pod 'Opus-ios', '~> 1.9'
+```
+
+Then run:
+
+```bash
+pod install
+```
+
+### Manual Integration
+
+1. Build the XCFramework (see [Building the Library](#building-the-library))
+2. Drag `dependencies/opus.xcframework` into your Xcode project
+3. Ensure it's added to your target's **Frameworks, Libraries, and Embedded Content**
 
 ## Usage
 
-1. (Objective-C) [Build the static library](#building-the-static-library)
-2. (Optionally for Swift) [Build the framework](#building-the-framework)
-3. (Optionally) Use the [CocoaPod spec](/opus-ios.podspec)
+### Swift
 
-## Building the Static Library
+```swift
+import opus
 
-#### Step 1
+// Create encoder
+var error: Int32 = 0
+let encoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_VOIP, &error)
 
-Download the [latest stable tar file](http://opus-codec.org/downloads/) and place it into the `build/src` directory
+// Encode audio
+let frameSize: Int32 = 960 // 20ms at 48kHz
+var encodedData = [UInt8](repeating: 0, count: 4000)
+let pcmData: [Int16] = [] // Your PCM audio samples
+let encodedBytes = opus_encode(encoder, pcmData, frameSize, &encodedData, 4000)
 
-Note: If it's a new version of opus or if the iOS SDKs changed since the last time you built it, update that version at the top of the `build-libopus.sh` file.
-
-#### Step 2
-
-From the command line, run:
-
-```bash
-$ ./build-libopus.sh
+// Clean up
+opus_encoder_destroy(encoder)
 ```
 
-That will take the tar file and build the static library in a directory called `dependencies`
+### Objective-C
 
-#### Step 3
+```objc
+#import <opus/opus.h>
 
-Follow the steps above for building the framework from the static library
+// Create encoder
+int error;
+OpusEncoder *encoder = opus_encoder_create(48000, 2, OPUS_APPLICATION_VOIP, &error);
 
+// Encode audio
+int frameSize = 960; // 20ms at 48kHz
+unsigned char encodedData[4000];
+opus_int16 *pcmData = ...; // Your PCM audio samples
+int encodedBytes = opus_encode(encoder, pcmData, frameSize, encodedData, 4000);
 
-## Building the Framework
+// Clean up
+opus_encoder_destroy(encoder);
+```
 
-#### Step 1
+## Building the Library
 
-Open the `opus/opus.xcodeproj` file, select `UniversalTarget` with a `Generic iOS Device`
+If you need to rebuild the library from source:
 
-#### Step 2
+### Prerequisites
 
-Build the framework by pressing Run; this will overwrite the framework in the repo root.
+- Xcode Command Line Tools
+- Internet connection (to download Opus source if not cached)
 
-Note: this runs a custom build script within Build Phases that will build a universal framework with both simulator and device slices
+### Step 1: Configure Version
 
-If we have issues with submitting to the app store w/ the extra simulator slices, view this: http://arsenkin.com/ios-universal-framework.html / http://stackoverflow.com/a/30866648/308315
-
-#### Step 3
-
-Ensure the framework includes slices for both simulator and device architectures (x86_64 i386 armv7 armv7s arm64)
+Edit `build-libopus.sh` to set your desired versions:
 
 ```bash
-$ lipo -info opus.framework/opus
+VERSION="1.5.2"        # Opus version
+SDKVERSION="26.0"      # iOS SDK version (run `xcodebuild -showsdks` to check)
+MINIOSVERSION="16.0"   # Minimum iOS deployment target
+```
+
+### Step 2: Build
+
+```bash
+./build-libopus.sh
+```
+
+This will:
+1. Download the Opus source tarball (or use cached version from `build/src/`)
+2. Cross-compile for iOS Device (arm64)
+3. Cross-compile for iOS Simulator (arm64 + x86_64)
+4. Create an XCFramework at `dependencies/opus.xcframework`
+
+The build uses `/tmp` for compilation to avoid permission issues with system directories.
+
+### Step 3: Verify
+
+```bash
+# Check XCFramework structure
+ls -la dependencies/opus.xcframework/
+
+# Verify device architecture (arm64)
+lipo -info dependencies/opus.xcframework/ios-arm64/opus.framework/opus
+
+# Verify simulator architectures (arm64 + x86_64)
+lipo -info dependencies/opus.xcframework/ios-arm64_x86_64-simulator/opus.framework/opus
+```
+
+## Opus Codec Features
+
+- **Sampling rates**: 8 to 48 kHz
+- **Bit-rates**: 6 kb/s to 510 kb/s
+- **Channels**: Mono, Stereo, up to 255 channels
+- **Frame sizes**: 2.5 ms to 60 ms
+- **Applications**: VoIP, video conferencing, in-game chat, live music
+
+## Troubleshooting
+
+### Apple Silicon Simulator Error (Fixed in v1.9+)
+
+If you see:
+```
+Building for 'iOS-simulator', but linking in object file built for 'iOS'
+```
+
+**Solution**: Update to version 1.9+ which includes an XCFramework with proper Apple Silicon simulator support.
+
+For older versions, you can:
+1. Run the simulator with Rosetta (Product → Destination → Destination Architectures → Show Rosetta Destinations)
+2. Rebuild the library using the updated `build-libopus.sh` script
+
+### SDK Version Mismatch
+
+If the build fails with "no such sysroot directory", check your installed SDK:
+
+```bash
+ls /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/
+```
+
+Update `SDKVERSION` in `build-libopus.sh` to match your installed SDK.
+
+### Permission Issues
+
+The build script uses `/tmp` for compilation to avoid permission issues. If you still encounter problems:
+
+```bash
+# Check ownership of build directory
+ls -la build/
+
+# If owned by root, the build script will automatically use /tmp
 ```
 
 ## License
 
-MIT
+MIT License - see [LICENSE](LICENSE) for details.
+
+## Credits
+
+- [Opus Codec](http://www.opus-codec.org) by Xiph.Org Foundation & Skype
+- Original iOS build scripts by [Mike Tigas](https://github.com/mtigas)
+- Maintained by [OnBeep](https://github.com/OnBeep)
