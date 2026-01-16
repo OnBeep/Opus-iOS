@@ -1,6 +1,7 @@
 #!/bin/bash
-#  Builds libopus for all three current iPhone targets: iPhoneSimulator-i386,
-#  iPhoneOS-armv6, iPhoneOS-armv7.
+#  Builds libopus for iOS as an XCFramework supporting:
+#  - iOS Device (arm64)
+#  - iOS Simulator (arm64 for Apple Silicon, x86_64 for Intel)
 #
 #  Copyright 2012 Mike Tigas <mike@tig.as>
 #
@@ -23,7 +24,7 @@
 #  Choose your libopus version and your currently-installed iOS SDK version:
 #
 VERSION="1.5.2"
-SDKVERSION="18.2"
+SDKVERSION="26.0"
 MINIOSVERSION="16.0"
 
 ###########################################################################
@@ -39,18 +40,18 @@ if [ "${DEBUG}" == "true" ]; then
     OPT_LDFLAGS=""
     OPT_CONFIG_ARGS="--enable-assertions --disable-asm"
 else
-    OPT_CFLAGS="-Ofast -flto -g"
-    OPT_LDFLAGS="-flto"
+    OPT_CFLAGS="-O3 -ffast-math -g"
+    OPT_LDFLAGS=""
     OPT_CONFIG_ARGS=""
 fi
 
-
-# No need to change this since xcode build will only compile in the
-# necessary bits from the libraries we create
-ARCHS="x86_64 arm64"
+# Architectures to build
+# Device: arm64
+# Simulator: arm64 (Apple Silicon) + x86_64 (Intel)
+DEVICE_ARCHS="arm64"
+SIM_ARCHS="arm64 x86_64"
 
 DEVELOPER=`xcode-select -print-path`
-#DEVELOPER="/Applications/Xcode.app/Contents/Developer"
 
 cd "`dirname \"$0\"`"
 REPOROOT=$(pwd)
@@ -60,8 +61,9 @@ OUTPUTDIR="${REPOROOT}/dependencies"
 mkdir -p ${OUTPUTDIR}/include
 mkdir -p ${OUTPUTDIR}/lib
 
-
-BUILDDIR="${REPOROOT}/build"
+# Use /tmp for building to avoid permission issues
+BUILDDIR="/tmp/opus-ios-build-$$"
+mkdir -p ${BUILDDIR}
 
 # where we will keep our sources and build from.
 SRCDIR="${BUILDDIR}/src"
@@ -70,6 +72,8 @@ mkdir -p $SRCDIR
 INTERDIR="${BUILDDIR}/built"
 mkdir -p $INTERDIR
 
+echo "Build directory: ${BUILDDIR}"
+
 ########################################
 
 cd $SRCDIR
@@ -77,9 +81,14 @@ cd $SRCDIR
 # Exit the script if an error happens
 set -e
 
-if [ ! -e "${SRCDIR}/opus-${VERSION}.tar.gz" ]; then
-	echo "Downloading opus-${VERSION}.tar.gz"
-	curl -LO http://downloads.xiph.org/releases/opus/opus-${VERSION}.tar.gz
+# Check if tarball exists in repo, otherwise download
+TARBALL="${REPOROOT}/build/src/opus-${VERSION}.tar.gz"
+if [ -e "${TARBALL}" ]; then
+    echo "Using existing opus-${VERSION}.tar.gz from build/src/"
+    cp "${TARBALL}" "${SRCDIR}/"
+elif [ ! -e "${SRCDIR}/opus-${VERSION}.tar.gz" ]; then
+    echo "Downloading opus-${VERSION}.tar.gz"
+    curl -LO http://downloads.xiph.org/releases/opus/opus-${VERSION}.tar.gz
 fi
 echo "Using opus-${VERSION}.tar.gz"
 
@@ -89,93 +98,204 @@ cd "${SRCDIR}/opus-${VERSION}"
 set +e # don't bail out of bash script if ccache doesn't exist
 CCACHE=`which ccache`
 if [ $? == "0" ]; then
-	echo "Building with ccache: $CCACHE"
-	CCACHE="${CCACHE} "
+    echo "Building with ccache: $CCACHE"
+    CCACHE="${CCACHE} "
 else
-	echo "Building without ccache"
-	CCACHE=""
+    echo "Building without ccache"
+    CCACHE=""
 fi
 set -e # back to regular "bail out on error" mode
 
 export ORIGINALPATH=$PATH
 
-for ARCH in ${ARCHS}
+########################################
+# Build for iOS Device (arm64)
+########################################
+echo "========================================"
+echo "Building for iOS Device..."
+echo "========================================"
+
+for ARCH in ${DEVICE_ARCHS}
 do
-    if [ "${ARCH}" == "i386" ] || [ "${ARCH}" == "x86_64" ]; then
-        PLATFORM="iPhoneSimulator"
-        EXTRA_CFLAGS="-arch ${ARCH}"
-        EXTRA_CONFIG="--host=x86_64-apple-darwin"
-    else
-		echo "Building for Apple Silicon"
-        PLATFORM="iPhoneOS"
-        EXTRA_CFLAGS="-arch ${ARCH}"
-        EXTRA_CONFIG="--host=arm-apple-darwin"
-    fi
+    echo "Building Device arch: ${ARCH}"
+    PLATFORM="iPhoneOS"
+    EXTRA_CFLAGS="-arch ${ARCH} -target ${ARCH}-apple-ios${MINIOSVERSION}"
+    EXTRA_CONFIG="--host=arm-apple-darwin"
 
-	mkdir -p "${INTERDIR}/${PLATFORM}${SDKVERSION}-${ARCH}.sdk"
+    mkdir -p "${INTERDIR}/${PLATFORM}${SDKVERSION}-${ARCH}.sdk"
 
-	./configure --enable-float-approx --disable-shared --disable-asm --enable-static --with-pic --disable-extra-programs --disable-doc ${EXTRA_CONFIG} \
+    ./configure --enable-float-approx --disable-shared --disable-asm --enable-static --with-pic --disable-extra-programs --disable-doc ${EXTRA_CONFIG} \
     --prefix="${INTERDIR}/${PLATFORM}${SDKVERSION}-${ARCH}.sdk" \
     LDFLAGS="$LDFLAGS ${OPT_LDFLAGS} -fPIE -miphoneos-version-min=${MINIOSVERSION} -L${OUTPUTDIR}/lib" \
     CFLAGS="$CFLAGS ${EXTRA_CFLAGS} ${OPT_CFLAGS} -fPIE -miphoneos-version-min=${MINIOSVERSION} -I${OUTPUTDIR}/include -isysroot ${DEVELOPER}/Platforms/${PLATFORM}.platform/Developer/SDKs/${PLATFORM}${SDKVERSION}.sdk" \
 
-    # Build the application and install it to the fake SDK intermediary dir
-    # we have set up. Make sure to clean up afterward because we will re-use
-    # this source tree to cross-compile other targets.
-	make -j4
-	make install
-	make clean
+    make -j4
+    make install
+    make clean
 done
 
 ########################################
+# Build for iOS Simulator (arm64 + x86_64)
+########################################
+echo "========================================"
+echo "Building for iOS Simulator..."
+echo "========================================"
 
-echo "Build library..."
+for ARCH in ${SIM_ARCHS}
+do
+    echo "Building Simulator arch: ${ARCH}"
+    PLATFORM="iPhoneSimulator"
+    
+    if [ "${ARCH}" == "arm64" ]; then
+        # Apple Silicon simulator
+        EXTRA_CFLAGS="-arch ${ARCH} -target ${ARCH}-apple-ios${MINIOSVERSION}-simulator"
+        EXTRA_CONFIG="--host=arm-apple-darwin"
+    else
+        # Intel simulator
+        EXTRA_CFLAGS="-arch ${ARCH} -target ${ARCH}-apple-ios${MINIOSVERSION}-simulator"
+        EXTRA_CONFIG="--host=x86_64-apple-darwin"
+    fi
 
-# These are the libs that comprise libopus.
-OUTPUT_LIBS="libopus.a"
-for OUTPUT_LIB in ${OUTPUT_LIBS}; do
-	INPUT_LIBS=""
-	for ARCH in ${ARCHS}; do
-		if [ "${ARCH}" == "i386" ] || [ "${ARCH}" == "x86_64" ];
-		then
-			PLATFORM="iPhoneSimulator"
-		else
-			PLATFORM="iPhoneOS"
-		fi
-		INPUT_ARCH_LIB="${INTERDIR}/${PLATFORM}${SDKVERSION}-${ARCH}.sdk/lib/${OUTPUT_LIB}"
-		if [ -e $INPUT_ARCH_LIB ]; then
-			INPUT_LIBS="${INPUT_LIBS} ${INPUT_ARCH_LIB}"
-		fi
-	done
-	# Combine the three architectures into a universal library.
-	if [ -n "$INPUT_LIBS"  ]; then
-		lipo -create $INPUT_LIBS \
-		-output "${OUTPUTDIR}/lib/${OUTPUT_LIB}"
-	else
-		echo "$OUTPUT_LIB does not exist, skipping (are the dependencies installed?)"
-	fi
+    mkdir -p "${INTERDIR}/${PLATFORM}${SDKVERSION}-${ARCH}.sdk"
+
+    ./configure --enable-float-approx --disable-shared --disable-asm --enable-static --with-pic --disable-extra-programs --disable-doc ${EXTRA_CONFIG} \
+    --prefix="${INTERDIR}/${PLATFORM}${SDKVERSION}-${ARCH}.sdk" \
+    LDFLAGS="$LDFLAGS ${OPT_LDFLAGS} -fPIE -mios-simulator-version-min=${MINIOSVERSION} -L${OUTPUTDIR}/lib" \
+    CFLAGS="$CFLAGS ${EXTRA_CFLAGS} ${OPT_CFLAGS} -fPIE -mios-simulator-version-min=${MINIOSVERSION} -I${OUTPUTDIR}/include -isysroot ${DEVELOPER}/Platforms/${PLATFORM}.platform/Developer/SDKs/${PLATFORM}${SDKVERSION}.sdk" \
+
+    make -j4
+    make install
+    make clean
 done
 
-for ARCH in ${ARCHS}; do
-	if [ "${ARCH}" == "i386" ] || [ "${ARCH}" == "x86_64" ];
-	then
-		PLATFORM="iPhoneSimulator"
-	else
-		PLATFORM="iPhoneOS"
-	fi
-	cp -R ${INTERDIR}/${PLATFORM}${SDKVERSION}-${ARCH}.sdk/include/* ${OUTPUTDIR}/include/
-	if [ $? == "0" ]; then
-		# We only need to copy the headers over once. (So break out of forloop
-		# once we get first success.)
-		break
-	fi
-done
+########################################
+echo "Creating framework from static libraries..."
+########################################
 
+# Create device framework
+echo "Creating iOS Device framework..."
+DEVICE_FRAMEWORK_DIR="${INTERDIR}/frameworks/device/opus.framework"
+mkdir -p "${DEVICE_FRAMEWORK_DIR}/Headers"
+
+# Create device static lib
+lipo -create "${INTERDIR}/iPhoneOS${SDKVERSION}-arm64.sdk/lib/libopus.a" \
+    -output "${DEVICE_FRAMEWORK_DIR}/opus"
+
+# Copy headers
+cp -R ${INTERDIR}/iPhoneOS${SDKVERSION}-arm64.sdk/include/opus/* "${DEVICE_FRAMEWORK_DIR}/Headers/"
+
+# Create module map
+mkdir -p "${DEVICE_FRAMEWORK_DIR}/Modules"
+cat > "${DEVICE_FRAMEWORK_DIR}/Modules/module.modulemap" << EOF
+framework module opus {
+  umbrella header "opus.h"
+  export *
+  module * { export * }
+}
+EOF
+
+# Create Info.plist
+cat > "${DEVICE_FRAMEWORK_DIR}/Info.plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>opus</string>
+    <key>CFBundleIdentifier</key>
+    <string>org.opus-codec.opus</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>opus</string>
+    <key>CFBundlePackageType</key>
+    <string>FMWK</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${VERSION}</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>MinimumOSVersion</key>
+    <string>${MINIOSVERSION}</string>
+</dict>
+</plist>
+EOF
+
+# Create simulator framework with combined architectures
+echo "Creating iOS Simulator framework..."
+SIM_FRAMEWORK_DIR="${INTERDIR}/frameworks/simulator/opus.framework"
+mkdir -p "${SIM_FRAMEWORK_DIR}/Headers"
+mkdir -p "${SIM_FRAMEWORK_DIR}/Modules"
+
+# Combine simulator architectures
+lipo -create \
+    "${INTERDIR}/iPhoneSimulator${SDKVERSION}-arm64.sdk/lib/libopus.a" \
+    "${INTERDIR}/iPhoneSimulator${SDKVERSION}-x86_64.sdk/lib/libopus.a" \
+    -output "${SIM_FRAMEWORK_DIR}/opus"
+
+# Copy headers and module map
+cp -R ${INTERDIR}/iPhoneSimulator${SDKVERSION}-arm64.sdk/include/opus/* "${SIM_FRAMEWORK_DIR}/Headers/"
+cp "${DEVICE_FRAMEWORK_DIR}/Modules/module.modulemap" "${SIM_FRAMEWORK_DIR}/Modules/"
+cp "${DEVICE_FRAMEWORK_DIR}/Info.plist" "${SIM_FRAMEWORK_DIR}/"
+
+echo "Device framework architectures:"
+lipo -info "${DEVICE_FRAMEWORK_DIR}/opus"
+
+echo "Simulator framework architectures:"
+lipo -info "${SIM_FRAMEWORK_DIR}/opus"
+
+########################################
+echo "Creating XCFramework..."
+########################################
+
+# Remove old XCFramework if exists
+rm -rf "${OUTPUTDIR}/opus.xcframework"
+
+# Create XCFramework from frameworks
+xcodebuild -create-xcframework \
+    -framework "${DEVICE_FRAMEWORK_DIR}" \
+    -framework "${SIM_FRAMEWORK_DIR}" \
+    -output "${OUTPUTDIR}/opus.xcframework"
+
+echo "XCFramework created at: ${OUTPUTDIR}/opus.xcframework"
+
+# Also update headers in dependencies/include
+cp -R ${INTERDIR}/iPhoneOS${SDKVERSION}-arm64.sdk/include/* ${OUTPUTDIR}/include/
+
+########################################
+echo "Verifying XCFramework..."
+########################################
+
+echo "XCFramework contents:"
+ls -la "${OUTPUTDIR}/opus.xcframework/"
+
+echo ""
+echo "Device library info:"
+lipo -info "${OUTPUTDIR}/opus.xcframework/ios-arm64/libopus.a" 2>/dev/null || echo "(check ios-arm64 directory)"
+
+echo ""
+echo "Simulator library info:"
+lipo -info "${OUTPUTDIR}/opus.xcframework/ios-arm64_x86_64-simulator/libopus.a" 2>/dev/null || echo "(check simulator directory)"
 
 ####################
 
+echo ""
 echo "Building done."
 echo "Cleaning up..."
-rm -fr ${INTERDIR}
-rm -fr "${SRCDIR}/opus-${VERSION}"
+rm -rf ${BUILDDIR}
 echo "Done."
+
+echo ""
+echo "========================================"
+echo "Build Summary:"
+echo "========================================"
+echo "XCFramework: ${OUTPUTDIR}/opus.xcframework"
+echo "Headers:     ${OUTPUTDIR}/include/opus/"
+echo ""
+echo "Supported architectures:"
+echo "  - iOS Device: arm64"
+echo "  - iOS Simulator: arm64 (Apple Silicon) + x86_64 (Intel)"
+echo ""
+echo "Use this XCFramework with CocoaPods or SPM."
+echo "========================================"
